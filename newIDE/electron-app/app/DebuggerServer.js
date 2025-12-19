@@ -1,0 +1,106 @@
+const WebSocket = require('ws');
+const { getAvailablePort } = require('./Utils/AvailablePortFinder');
+const log = require('electron-log');
+const { findLocalIp } = require('./Utils/LocalNetworkIpFinder');
+
+let wsServer = null;
+let webSockets = {};
+let nextDebuggerId = 0;
+
+const closeServer = () => {
+  wsServer = null;
+  webSockets = {};
+};
+
+const closeAllConnections = () => {
+  Object.keys(webSockets).forEach(id => {
+    const webSocket = webSockets[id];
+    if (!webSocket) return;
+
+    try {
+      webSocket.close();
+    } catch (error) {
+      log.warn(
+        `Unable to close debugger connection with id "${id}" while closing the project: ${error.message || error}`
+      );
+    }
+  });
+
+  webSockets = {};
+};
+
+/** @param {WebSocket.Server} wsServer */
+const getServerAddress = wsServer => ({
+  address: findLocalIp() || '127.0.0.1',
+  port: wsServer.address().port,
+});
+
+/**
+ * This module creates a WebSocket server listening for a connection
+ * and simply forwards the messages.
+ * Debugger logic is made inside Debugger (in newIDE) or gdjs.AbstractDebuggerClient
+ * (in GDJS).
+ */
+module.exports = {
+  startDebuggerServer: options => {
+    if (wsServer) {
+      return options.onListening({ address: getServerAddress(wsServer) });
+    }
+
+    getAvailablePort(3030, 4000).then(
+      port => {
+        wsServer = new WebSocket.Server({ port });
+        webSockets = {};
+
+        wsServer.on('connection', function connection(newWebSocket) {
+          const id = 'preview-ws-' + nextDebuggerId++;
+          webSockets[id] = newWebSocket;
+          log.info(`Debugger connection with id "${id}" opened.`);
+
+          newWebSocket.on('message', message => {
+            // log.info(`Debugger connection with id "${id}" received message.`);
+            options.onMessage({ id, message });
+          });
+
+          newWebSocket.on('close', () => {
+            log.info(`Debugger connection with id "${id}" closed.`);
+            webSockets[id] = null;
+            options.onConnectionClose({ id });
+          });
+
+          newWebSocket.on('error', error => {
+            const errorMessage = error.message || 'Unknown error';
+            log.error(`Error in debugger connection with id "${id}": ${errorMessage}.`);
+            options.onConnectionError({ id, errorMessage });
+          });
+
+          options.onConnectionOpen({ id });
+        });
+
+        wsServer.on('listening', () => {
+          log.info('Debugger listening for connections.');
+          options.onListening({ address: getServerAddress(wsServer) });
+        });
+
+        wsServer.on('error', error => {
+          log.error('Debugger server errored.');
+          options.onError(error);
+          closeServer();
+        });
+      },
+      err => {
+        log.error('Could not find a port for the Debugger server.');
+        options.onError(err);
+      }
+    );
+  },
+  closeServer,
+  closeAllConnections,
+  sendMessage: ({ id, message }, cb) => {
+    if (!webSockets[id]) return cb(`Debugger connection with id "${id}" does not exist`);
+
+    webSockets[id].send(message, err => {
+      cb(err);
+    });
+  },
+};
