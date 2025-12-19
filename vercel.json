@@ -1,0 +1,16 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "newIDE/app/package.json",
+      "use": "@vercel/static-build",
+      "config": {
+        "distDir": "build"
+      }
+    }
+  ],
+  "routes": [
+    { "src": "/static/(.*)", "dest": "/static/$1" },
+    { "src": "/(.*)", "dest": "/index.html" }
+  ]
+}
